@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   ArrowLeft, ShieldAlert, Monitor, AlertTriangle, Send, 
-  Maximize2, X, RefreshCw, Radio, UserCheck, ShieldOff 
+  Maximize2, X, RefreshCw, Radio, UserCheck, ShieldOff, Lock, RotateCcw 
 } from "lucide-react";
 import { api } from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -13,6 +13,10 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
   const [selectedStudentForVideo, setSelectedStudentForVideo] = useState(null);
   const [warningModalStudent, setWarningModalStudent] = useState(null);
   const [warningText, setWarningText] = useState("");
+  const [attempts, setAttempts] = useState({}); // student_id -> attempt (server strikes & lock state)
+  const [resetTarget, setResetTarget] = useState(null); // student_id being reset
+  const [resetStrikes, setResetStrikes] = useState(assignment.max_strikes || 3);
+  const [attemptError, setAttemptError] = useState("");
 
   const wsRef = useRef(null);
   const peerConnectionsRef = useRef({}); // student_id -> RTCPeerConnection
@@ -30,6 +34,33 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
     }
     loadHistory();
   }, [assignment.id]);
+
+  // 1b. Fetch exam attempts (strikes, locked students)
+  useEffect(() => {
+    api.attempts
+      .list(assignment.id)
+      .then((list) => {
+        const map = {};
+        list.forEach((a) => {
+          map[a.student_id] = a;
+        });
+        setAttempts(map);
+      })
+      .catch((err) => setAttemptError(err.message || "Failed to load attempts."));
+  }, [assignment.id]);
+
+  const handleResetStrikes = async (studentId) => {
+    const n = parseInt(resetStrikes, 10);
+    if (!n || n < 1) return;
+    setAttemptError("");
+    try {
+      const updated = await api.attempts.resetStrikes(assignment.id, studentId, n);
+      setAttempts((prev) => ({ ...prev, [studentId]: updated }));
+      setResetTarget(null);
+    } catch (err) {
+      setAttemptError(err.message || "Failed to reset strikes.");
+    }
+  };
 
   // 2. Connect to Proctoring WebSocket Room
   useEffect(() => {
@@ -94,6 +125,16 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
               }
             }
             return copy;
+          });
+        }
+
+        // Server-side attempt change (strike counted, locked, reset, submitted)
+        else if (msg.type === "attempt_update") {
+          const a = msg.attempt;
+          setAttempts((prev) => ({ ...prev, [a.student_id]: { ...prev[a.student_id], ...a } }));
+          setStudents((prev) => {
+            if (!prev[a.student_id]) return prev;
+            return { ...prev, [a.student_id]: { ...prev[a.student_id], current_strikes: a.strikes } };
           });
         }
 
@@ -460,6 +501,85 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
           flexDirection: "column",
           overflow: "hidden"
         }}>
+          {/* Attempts & Strikes: unlock students who hit the strike limit */}
+          <div style={{ borderBottom: "1px solid var(--border)", maxHeight: "45%", display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "14px 18px 8px", display: "flex", alignItems: "center", gap: "8px" }}>
+              <Lock size={16} color="var(--warning)" />
+              <h3 style={{ fontSize: "14px" }}>Attempts & Strikes</h3>
+              <span style={{ fontSize: "11px", color: "var(--text-muted)", marginLeft: "auto" }}>
+                {Object.values(attempts).filter((a) => a.status === "locked").length} locked
+              </span>
+            </div>
+            {attemptError && (
+              <p style={{ fontSize: "11.5px", color: "#fca5a5", padding: "0 18px 8px" }}>{attemptError}</p>
+            )}
+            <div style={{ overflowY: "auto", padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              {Object.values(attempts).length === 0 ? (
+                <p style={{ fontSize: "12px", color: "var(--text-muted)", padding: "0 6px" }}>No one has started this test yet.</p>
+              ) : (
+                Object.values(attempts)
+                  .sort((a, b) => (b.status === "locked") - (a.status === "locked"))
+                  .map((a) => (
+                    <div key={a.student_id} style={{
+                      background: a.status === "locked" ? "rgba(239, 68, 68, 0.1)" : "rgba(10, 14, 23, 0.6)",
+                      border: a.status === "locked" ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid var(--border)",
+                      borderRadius: "8px",
+                      padding: "8px 10px"
+                    }}>
+                      <div className="flex-between" style={{ gap: "8px" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: "12.5px", fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {a.student?.name || students[a.student_id]?.student_name || "Student #" + a.student_id}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                            Strikes {a.strikes} / {a.allowed_strikes}
+                          </div>
+                        </div>
+                        <span className={"badge " + (a.status === "locked" ? "badge-danger" : a.status === "submitted" ? "badge-primary" : "badge-success")}>
+                          {a.status === "in_progress" ? "In progress" : a.status === "locked" ? "Locked" : "Submitted"}
+                        </span>
+                      </div>
+
+                      {a.status !== "submitted" && (
+                        resetTarget === a.student_id ? (
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px", fontSize: "11.5px" }}>
+                            <span style={{ color: "var(--text-secondary)" }}>Allow</span>
+                            <input
+                              type="number"
+                              min="1"
+                              max="50"
+                              value={resetStrikes}
+                              onChange={(e) => setResetStrikes(e.target.value)}
+                              className="form-input"
+                              style={{ width: "58px", padding: "3px 6px", fontSize: "12px" }}
+                            />
+                            <span style={{ color: "var(--text-secondary)" }}>strikes</span>
+                            <button onClick={() => handleResetStrikes(a.student_id)} className="btn btn-success btn-sm" style={{ fontSize: "11px", padding: "3px 8px" }}>
+                              Reset
+                            </button>
+                            <button onClick={() => setResetTarget(null)} className="btn btn-secondary btn-sm" style={{ fontSize: "11px", padding: "3px 6px" }}>
+                              <X size={12} />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setResetTarget(a.student_id);
+                              setResetStrikes(assignment.max_strikes || 3);
+                            }}
+                            className={"btn btn-sm " + (a.status === "locked" ? "btn-danger" : "btn-secondary")}
+                            style={{ fontSize: "11px", padding: "3px 8px", marginTop: "8px" }}
+                          >
+                            <RotateCcw size={12} /> {a.status === "locked" ? "Unlock & reset strikes" : "Reset strikes"}
+                          </button>
+                        )
+                      )}
+                    </div>
+                  ))
+              )}
+            </div>
+          </div>
+
           <div style={{
             padding: "14px 18px",
             borderBottom: "1px solid var(--border)",

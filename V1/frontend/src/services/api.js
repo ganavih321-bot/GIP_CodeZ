@@ -40,48 +40,62 @@ async function request(endpoint, options = {}) {
 export const api = {
   // Auth
   auth: {
-    login: (email, password) =>
-      request("/auth/login", {
+    config: () => request("/auth/config"),
+    google: (credential) =>
+      request("/auth/google", {
         method: "POST",
-        body: JSON.stringify({ email, password })
-      }),
-    register: (name, email, password, role) =>
-      request("/auth/register", {
-        method: "POST",
-        body: JSON.stringify({ name, email, password, role })
+        body: JSON.stringify({ credential })
       }),
     me: () => request("/auth/me")
   },
 
-  // Classrooms
-  classrooms: {
-    list: () => request("/classrooms"),
-    create: (data) =>
-      request("/classrooms", {
+  // Admin: Students
+  students: {
+    list: () => request("/admin/students"),
+    invite: (students, assignmentIds = []) =>
+      request("/admin/students/invite", {
         method: "POST",
-        body: JSON.stringify(data)
+        body: JSON.stringify({ students, assignment_ids: assignmentIds })
       }),
-    join: (code) =>
-      request("/classrooms/join", {
-        method: "POST",
-        body: JSON.stringify({ code })
-      }),
-    getDetail: (id) => request(`/classrooms/${id}`),
-    delete: (id) =>
-      request(`/classrooms/${id}`, {
+    remove: (id) =>
+      request(`/admin/students/${id}`, {
         method: "DELETE"
       })
   },
 
-  // Assignments / Exams
+  // Tests (Assignments)
   assignments: {
-    create: (classroomId, data) =>
-      request(`/classrooms/${classroomId}/assignments`, {
+    create: (data) =>
+      request("/assignments", {
         method: "POST",
         body: JSON.stringify(data)
       }),
-    list: (classroomId) => request(`/classrooms/${classroomId}/assignments`),
-    getDetail: (id) => request(`/assignments/${id}`)
+    list: () => request("/assignments"),
+    getDetail: (id) => request(`/assignments/${id}`),
+    updateAssignees: (id, studentIds) =>
+      request(`/assignments/${id}/assignees`, {
+        method: "PUT",
+        body: JSON.stringify({ student_ids: studentIds })
+      }),
+    delete: (id) =>
+      request(`/assignments/${id}`, {
+        method: "DELETE"
+      })
+  },
+
+  // Exam attempts (server-side timer & strikes)
+  attempts: {
+    getMine: (assignmentId) => request(`/assignments/${assignmentId}/attempt`),
+    start: (assignmentId) =>
+      request(`/assignments/${assignmentId}/attempt/start`, { method: "POST" }),
+    finish: (assignmentId) =>
+      request(`/assignments/${assignmentId}/attempt/finish`, { method: "POST" }),
+    list: (assignmentId) => request(`/assignments/${assignmentId}/attempts`),
+    resetStrikes: (assignmentId, studentId, allowedStrikes) =>
+      request(`/assignments/${assignmentId}/attempts/${studentId}/reset`, {
+        method: "POST",
+        body: JSON.stringify({ allowed_strikes: allowedStrikes })
+      })
   },
 
   // Questions

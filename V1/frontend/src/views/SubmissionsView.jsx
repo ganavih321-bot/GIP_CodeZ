@@ -31,7 +31,7 @@ export default function SubmissionsView({ assignment, onBack }) {
       {/* Back button */}
       <div className="flex-between" style={{ marginBottom: "20px" }}>
         <button onClick={onBack} className="btn btn-secondary btn-sm">
-          <ArrowLeft size={16} /> Back to Classroom
+          <ArrowLeft size={16} /> Back to Tests
         </button>
         <button onClick={fetchSubmissions} className="btn btn-secondary btn-sm">
           <RefreshCw size={14} /> Refresh Submissions

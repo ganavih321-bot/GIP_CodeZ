@@ -13,7 +13,8 @@ from app.schemas.code_runner import (
     SubmitCodeResponse
 )
 from app.services.code_runner import execution_engine
-from app.core.security import get_current_user
+from app.core.security import get_current_user, ensure_can_access_assignment
+from app.services.attempts import require_active_attempt
 
 router = APIRouter(prefix="/code", tags=["Code Execution"])
 
@@ -26,6 +27,8 @@ def run_code(
     question = db.query(Question).filter(Question.id == run_req.question_id).first()
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
+    ensure_can_access_assignment(db, question.assignment_id, current_user)
+    require_active_attempt(db, question.assignment_id, current_user)
 
     results = []
     # If custom input is specified by the student
@@ -90,8 +93,10 @@ def submit_code(
     db: Session = Depends(get_db)
 ):
     question = db.query(Question).filter(Question.id == sub_req.question_id).first()
-    if not question:
+    if not question or question.assignment_id != sub_req.assignment_id:
         raise HTTPException(status_code=404, detail="Question not found")
+    ensure_can_access_assignment(db, question.assignment_id, current_user)
+    require_active_attempt(db, question.assignment_id, current_user)
 
     test_cases = question.test_cases
     if not test_cases:

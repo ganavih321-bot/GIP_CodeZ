@@ -6,19 +6,19 @@ from app.models.user import User
 from app.models.assignment import Assignment
 from app.models.submission import Submission
 from app.schemas.submission import SubmissionOut
-from app.core.security import get_current_user, require_teacher
+from app.core.security import get_current_user, require_admin
 
 router = APIRouter(tags=["Submissions"])
 
 @router.get("/assignments/{assignment_id}/submissions", response_model=List[SubmissionOut])
 def get_assignment_submissions(
     assignment_id: int,
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment or assignment.classroom.teacher_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Assignment not found or unauthorized")
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Test not found")
 
     submissions = db.query(Submission).filter(
         Submission.assignment_id == assignment_id
@@ -47,9 +47,9 @@ def get_submission_detail(
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    is_teacher = (submission.assignment.classroom.teacher_id == current_user.id)
+    is_admin = (current_user.role == "admin")
     is_owner = (submission.student_id == current_user.id)
-    if not (is_teacher or is_owner):
+    if not (is_admin or is_owner):
         raise HTTPException(status_code=403, detail="Unauthorized to view this submission")
 
     return submission

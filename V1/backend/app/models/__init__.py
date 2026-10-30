@@ -1,20 +1,20 @@
 from app.database import Base
 from app.models.user import User
-from app.models.classroom import Classroom, ClassroomEnrollment
-from app.models.assignment import Assignment
+from app.models.assignment import Assignment, AssignmentAssignee
 from app.models.question import Question, TestCase
 from app.models.submission import Submission, TestResult
 from app.models.proctoring import ProctoringEvent
+from app.models.attempt import ExamAttempt
 
 __all__ = [
     "Base",
     "User",
-    "Classroom",
-    "ClassroomEnrollment",
     "Assignment",
+    "AssignmentAssignee",
     "Question",
     "TestCase",
     "Submission",
     "TestResult",
     "ProctoringEvent",
+    "ExamAttempt",
 ]

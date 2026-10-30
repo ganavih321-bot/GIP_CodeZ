@@ -29,7 +29,7 @@ class ProctoringManager:
         await websocket.accept()
         self._ensure_room(assignment_id)
 
-        if role == "teacher":
+        if role == "admin":
             self.rooms[assignment_id]["teachers"][user_id] = websocket
             # Send current active students state to this teacher immediately
             current_states = list(self.student_states[assignment_id].values())
@@ -68,7 +68,7 @@ class ProctoringManager:
         if assignment_id not in self.rooms:
             return
 
-        if role == "teacher":
+        if role == "admin":
             self.rooms[assignment_id]["teachers"].pop(user_id, None)
         else:
             self.rooms[assignment_id]["students"].pop(user_id, None)
@@ -188,6 +188,11 @@ class ProctoringManager:
                     "type": msg_type,
                     "message": data.get("message", "The teacher has requested action.")
                 })
+
+    def update_strikes(self, assignment_id: int, student_id: int, strikes: int):
+        state = self.student_states.get(assignment_id, {}).get(student_id)
+        if state:
+            state["current_strikes"] = strikes
 
     def get_room_summary(self, assignment_id: int) -> List[dict]:
         if assignment_id in self.student_states:

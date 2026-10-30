@@ -1,45 +1,67 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useAuth } from "../context/AuthContext";
-import { Terminal, Shield, LogIn, UserPlus, Sparkles, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Terminal, AlertCircle, Info } from "lucide-react";
+
+const GSI_SRC = "https://accounts.google.com/gsi/client";
+
+function loadGoogleScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let script = document.querySelector(`script[src="${GSI_SRC}"]`);
+    if (!script) {
+      script = document.createElement("script");
+      script.src = GSI_SRC;
+      script.async = true;
+      document.head.appendChild(script);
+    }
+    script.addEventListener("load", () => resolve());
+    script.addEventListener("error", () => reject(new Error("Failed to load Google Sign-In.")));
+  });
+}
 
 export default function LoginView() {
-  const { login, register, quickDemoLogin } = useAuth();
-  const [isRegister, setIsRegister] = useState(false);
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [role, setRole] = useState("student");
+  const { authConfig, googleLogin } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const googleButtonRef = useRef(null);
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      if (isRegister) {
-        await register(name, email, password, role);
-      } else {
-        await login(email, password);
-      }
-    } catch (err) {
-      setError(err.message || "Authentication failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const clientId = authConfig.google_client_id;
 
-  const handleDemo = async (demoRole) => {
-    setLoading(true);
-    setError("");
-    try {
-      await quickDemoLogin(demoRole);
-    } catch (err) {
-      setError(err.message || "Failed to log in to demo account.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+
+    loadGoogleScript()
+      .then(() => {
+        if (cancelled || !googleButtonRef.current) return;
+        window.google.accounts.id.initialize({
+          client_id: clientId,
+          callback: async (response) => {
+            setLoading(true);
+            setError("");
+            try {
+              await googleLogin(response.credential);
+            } catch (err) {
+              setError(err.message || "Google sign-in failed.");
+            } finally {
+              setLoading(false);
+            }
+          }
+        });
+        window.google.accounts.id.renderButton(googleButtonRef.current, {
+          theme: "filled_black",
+          size: "large",
+          shape: "pill",
+          text: "signin_with",
+          width: 320
+        });
+      })
+      .catch((err) => setError(err.message));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
 
   return (
     <div style={{
@@ -74,112 +96,16 @@ export default function LoginView() {
           </div>
           <h1 style={{ fontSize: "2rem", marginBottom: "8px" }}>GIP_CodeZ</h1>
           <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-            Anti-Cheat Proctored Code Assessment & LMS Platform
+            Anti-Cheat Proctored Code Assessment Platform
           </p>
         </div>
 
-        {/* Quick Demo Login Cards */}
-        <div style={{
-          background: "rgba(99, 102, 241, 0.08)",
-          border: "1px solid rgba(99, 102, 241, 0.25)",
-          borderRadius: "16px",
-          padding: "16px",
-          backdropFilter: "blur(10px)"
-        }}>
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            fontSize: "12px",
-            fontWeight: "700",
-            color: "#a5b4fc",
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-            marginBottom: "12px"
-          }}>
-            <Sparkles size={14} /> Quick One-Click Demo Access
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-            <button
-              onClick={() => handleDemo("teacher")}
-              disabled={loading}
-              className="btn btn-secondary"
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "flex-start",
-                padding: "10px 12px",
-                border: "1px solid rgba(99, 102, 241, 0.3)",
-                background: "rgba(99, 102, 241, 0.12)"
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: "700", color: "#fff" }}>
-                <span>Teacher Portal</span>
-              </div>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>Alan Turing</span>
-            </button>
-
-            <button
-              onClick={() => handleDemo("student")}
-              disabled={loading}
-              className="btn btn-secondary"
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "flex-start",
-                padding: "10px 12px",
-                border: "1px solid rgba(6, 182, 212, 0.3)",
-                background: "rgba(6, 182, 212, 0.12)"
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: "700", color: "#fff" }}>
-                <span>Student Exam</span>
-              </div>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>Ada Lovelace</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Login / Register Card */}
-        <div className="glass-panel" style={{ padding: "32px" }}>
-          <div style={{
-            display: "flex",
-            borderBottom: "1px solid var(--border)",
-            marginBottom: "24px"
-          }}>
-            <button
-              onClick={() => { setIsRegister(false); setError(""); }}
-              style={{
-                flex: 1,
-                padding: "10px",
-                background: "transparent",
-                border: "none",
-                borderBottom: !isRegister ? "2px solid var(--primary)" : "2px solid transparent",
-                color: !isRegister ? "#fff" : "var(--text-muted)",
-                fontWeight: "600",
-                cursor: "pointer",
-                fontSize: "14px"
-              }}
-            >
-              Sign In
-            </button>
-            <button
-              onClick={() => { setIsRegister(true); setError(""); }}
-              style={{
-                flex: 1,
-                padding: "10px",
-                background: "transparent",
-                border: "none",
-                borderBottom: isRegister ? "2px solid var(--primary)" : "2px solid transparent",
-                color: isRegister ? "#fff" : "var(--text-muted)",
-                fontWeight: "600",
-                cursor: "pointer",
-                fontSize: "14px"
-              }}
-            >
-              Create Account
-            </button>
-          </div>
+        {/* Google Sign-In Card */}
+        <div className="glass-panel" style={{ padding: "32px", textAlign: "center" }}>
+          <h3 style={{ marginBottom: "6px" }}>Sign in</h3>
+          <p style={{ color: "var(--text-secondary)", fontSize: "13px", marginBottom: "24px" }}>
+            Use the Google account your admin invited.
+          </p>
 
           {error && (
             <div style={{
@@ -192,96 +118,39 @@ export default function LoginView() {
               marginBottom: "20px",
               display: "flex",
               alignItems: "center",
-              gap: "8px"
+              gap: "8px",
+              textAlign: "left"
             }}>
-              <AlertCircle size={16} />
+              <AlertCircle size={16} style={{ flexShrink: 0 }} />
               <span>{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit}>
-            {isRegister && (
-              <>
-                <div className="form-group">
-                  <label className="form-label">Full Name</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="e.g. Marie Curie"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    required
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Account Role</label>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
-                    <button
-                      type="button"
-                      onClick={() => setRole("student")}
-                      className={`btn btn-sm ${role === "student" ? "btn-primary" : "btn-secondary"}`}
-                      style={{ padding: "8px" }}
-                    >
-                      Student
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRole("teacher")}
-                      className={`btn btn-sm ${role === "teacher" ? "btn-primary" : "btn-secondary"}`}
-                      style={{ padding: "8px" }}
-                    >
-                      Teacher
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-
-            <div className="form-group">
-              <label className="form-label">Email Address</label>
-              <input
-                type="email"
-                className="form-input"
-                placeholder="you@institution.edu"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
+          {clientId ? (
+            <div style={{ display: "flex", justifyContent: "center", minHeight: "44px", opacity: loading ? 0.6 : 1 }}>
+              <div ref={googleButtonRef} />
             </div>
-
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <input
-                type="password"
-                className="form-input"
-                placeholder="••••••••"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
+          ) : (
+            <div style={{
+              background: "rgba(245, 158, 11, 0.12)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+              borderRadius: "8px",
+              padding: "10px 14px",
+              color: "#fcd34d",
+              fontSize: "13px",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: "8px",
+              textAlign: "left"
+            }}>
+              <Info size={16} style={{ flexShrink: 0, marginTop: "2px" }} />
+              <span>
+                Google Sign-In isn't configured yet. Set <code>GOOGLE_CLIENT_ID</code> in <code>V1/backend/.env</code> and restart the backend.
+              </span>
             </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn btn-primary"
-              style={{ width: "100%", marginTop: "12px", padding: "12px" }}
-            >
-              {loading ? (
-                "Please wait..."
-              ) : isRegister ? (
-                <>
-                  <UserPlus size={16} /> Create Account
-                </>
-              ) : (
-                <>
-                  <LogIn size={16} /> Sign In
-                </>
-              )}
-            </button>
-          </form>
+          )}
         </div>
+
       </div>
     </div>
   );

@@ -5,7 +5,7 @@ from app.models.user import User
 from app.models.assignment import Assignment
 from app.models.question import Question, TestCase
 from app.schemas.question import QuestionCreate, QuestionOut
-from app.core.security import require_teacher
+from app.core.security import require_admin
 
 router = APIRouter(tags=["Questions & Test Cases"])
 
@@ -13,12 +13,12 @@ router = APIRouter(tags=["Questions & Test Cases"])
 def create_question(
     assignment_id: int,
     q_in: QuestionCreate,
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
-    if not assignment or assignment.classroom.teacher_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Assignment not found or unauthorized")
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Test not found")
 
     question = Question(
         assignment_id=assignment_id,
@@ -50,12 +50,12 @@ def create_question(
 @router.delete("/questions/{question_id}")
 def delete_question(
     question_id: int,
-    current_user: User = Depends(require_teacher),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     question = db.query(Question).filter(Question.id == question_id).first()
-    if not question or question.assignment.classroom.teacher_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Question not found or unauthorized")
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
 
     db.delete(question)
     db.commit()

@@ -1,9 +1,16 @@
 import React from "react";
 import { useAuth } from "../context/AuthContext";
-import { Terminal, Shield, LogOut, UserCheck, Sparkles, BookOpen } from "lucide-react";
+import { Terminal, Shield, LogOut, FileCode, Users } from "lucide-react";
 
 export default function Navbar({ currentView, onNavigate }) {
-  const { user, logout, quickDemoLogin, isTeacher } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
+
+  const tabs = isAdmin
+    ? [
+        { view: "tests", label: "Tests", icon: FileCode },
+        { view: "students", label: "Students", icon: Users }
+      ]
+    : [{ view: "tests", label: "My Tests", icon: FileCode }];
 
   return (
     <header style={{
@@ -26,7 +33,7 @@ export default function Navbar({ currentView, onNavigate }) {
       }}>
         {/* Logo */}
         <div 
-          onClick={() => onNavigate("dashboard")}
+          onClick={() => onNavigate("tests")}
           style={{
             display: "flex",
             alignItems: "center",
@@ -74,64 +81,29 @@ export default function Navbar({ currentView, onNavigate }) {
 
         {/* Center Nav */}
         <nav style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <button
-            onClick={() => onNavigate("dashboard")}
-            className={`btn ${currentView === "dashboard" ? "btn-secondary" : ""}`}
-            style={{
-              background: currentView === "dashboard" ? "rgba(99, 102, 241, 0.15)" : "transparent",
-              color: currentView === "dashboard" ? "#a5b4fc" : "var(--text-secondary)",
-              border: currentView === "dashboard" ? "1px solid rgba(99, 102, 241, 0.3)" : "1px solid transparent"
-            }}
-          >
-            <BookOpen size={16} />
-            Classrooms
-          </button>
+          {tabs.map(({ view, label, icon: Icon }) => {
+            const active = currentView === view;
+            return (
+              <button
+                key={view}
+                onClick={() => onNavigate(view)}
+                className={`btn ${active ? "btn-secondary" : ""}`}
+                style={{
+                  background: active ? "rgba(99, 102, 241, 0.15)" : "transparent",
+                  color: active ? "#a5b4fc" : "var(--text-secondary)",
+                  border: active ? "1px solid rgba(99, 102, 241, 0.3)" : "1px solid transparent"
+                }}
+              >
+                <Icon size={16} />
+                {label}
+              </button>
+            );
+          })}
         </nav>
 
         {/* Right side Profile & Quick Demo Switcher */}
         {user ? (
           <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
-            {/* Quick Demo Switcher buttons */}
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              background: "rgba(255, 255, 255, 0.04)",
-              padding: "3px",
-              borderRadius: "8px",
-              border: "1px solid var(--border)"
-            }}>
-              <span style={{ fontSize: "11px", color: "var(--text-muted)", padding: "0 8px" }}>
-                Switch to:
-              </span>
-              <button
-                onClick={() => quickDemoLogin("teacher")}
-                className="btn btn-sm"
-                style={{
-                  background: isTeacher ? "var(--primary)" : "transparent",
-                  color: isTeacher ? "#fff" : "var(--text-secondary)",
-                  padding: "4px 8px",
-                  fontSize: "11px"
-                }}
-                title="Switch to Teacher account"
-              >
-                Teacher
-              </button>
-              <button
-                onClick={() => quickDemoLogin("student")}
-                className="btn btn-sm"
-                style={{
-                  background: !isTeacher ? "var(--accent-cyan)" : "transparent",
-                  color: !isTeacher ? "#090d16" : "var(--text-secondary)",
-                  padding: "4px 8px",
-                  fontSize: "11px",
-                  fontWeight: !isTeacher ? "700" : "500"
-                }}
-                title="Switch to Student account"
-              >
-                Student
-              </button>
-            </div>
-
             {/* User Pill */}
             <div style={{
               display: "flex",
@@ -142,11 +114,19 @@ export default function Navbar({ currentView, onNavigate }) {
               border: "1px solid var(--border)",
               borderRadius: "12px"
             }}>
+              {user.avatar_url ? (
+                <img
+                  src={user.avatar_url}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  style={{ width: "28px", height: "28px", borderRadius: "50%" }}
+                />
+              ) : (
               <div style={{
                 width: "28px",
                 height: "28px",
                 borderRadius: "50%",
-                background: isTeacher ? "linear-gradient(135deg, #6366f1, #4f46e5)" : "linear-gradient(135deg, #06b6d4, #0891b2)",
+                background: isAdmin ? "linear-gradient(135deg, #6366f1, #4f46e5)" : "linear-gradient(135deg, #06b6d4, #0891b2)",
                 color: "#fff",
                 display: "flex",
                 alignItems: "center",
@@ -156,13 +136,14 @@ export default function Navbar({ currentView, onNavigate }) {
               }}>
                 {user.name.charAt(0).toUpperCase()}
               </div>
+              )}
               <div style={{ display: "flex", flexDirection: "column" }}>
                 <span style={{ fontSize: "12px", fontWeight: "600", color: "#fff", lineHeight: 1.2 }}>
                   {user.name}
                 </span>
                 <span style={{
                   fontSize: "10px",
-                  color: isTeacher ? "#a5b4fc" : "#67e8f9",
+                  color: isAdmin ? "#a5b4fc" : "#67e8f9",
                   textTransform: "capitalize",
                   fontWeight: "600"
                 }}>

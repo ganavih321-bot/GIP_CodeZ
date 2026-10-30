@@ -1,33 +1,48 @@
 import React, { useState, useEffect, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import confetti from "canvas-confetti";
-import { 
-  Play, Send, Clock, ShieldAlert, AlertOctagon, CheckCircle2, 
-  XCircle, ChevronRight, Terminal, Minimize2, Maximize2, Shield,
-  AlertCircle, EyeOff, Check, X
+import {
+  Play, Send, Clock, ShieldAlert, AlertOctagon, CheckCircle2,
+  XCircle, Terminal, Maximize2, Monitor, Lock, ArrowLeft,
+  Check, X, AlertTriangle
 } from "lucide-react";
 import { api } from "../services/api";
-import { useAuth } from "../context/AuthContext";
+
+// Violations within this window count as one incident (e.g. blur + visibilitychange on a tab switch)
+const STRIKE_DEBOUNCE_MS = 2500;
+
+// In fullscreen the page should span the whole screen; a narrower viewport means a browser
+// side panel (Gemini, Copilot, ...) is docked next to it, or the page is zoomed in.
+function isSidePanelOpen() {
+  return !!document.fullscreenElement && window.innerWidth < window.screen.width * 0.97;
+}
 
 export default function ProctoredExamView({ assignment, onExit }) {
-  const { user } = useAuth();
+  const proctored = assignment.is_proctored;
   const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
   const [questions, setQuestions] = useState([]);
   const [codeMap, setCodeMap] = useState({}); // questionId -> code string
   const [loading, setLoading] = useState(true);
 
+  // Exam lifecycle: setup (proctored pre-checks) -> active -> done
+  const [phase, setPhase] = useState("setup");
+  const [attempt, setAttempt] = useState(null); // server state: strikes, allowed_strikes, status
+  const [pageError, setPageError] = useState("");
+  const [doneReason, setDoneReason] = useState("");
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+
   // Proctoring states
-  const [strikes, setStrikes] = useState(0);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(!!document.fullscreenElement);
+  const [hasFocus, setHasFocus] = useState(document.hasFocus());
+  const [sidePanelOpen, setSidePanelOpen] = useState(isSidePanelOpen());
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState("");
   const [screenStream, setScreenStream] = useState(null);
   const [isScreenShared, setIsScreenShared] = useState(false);
+  const [beginning, setBeginning] = useState(false);
 
-  // Timer state
-  const [secondsRemaining, setSecondsRemaining] = useState(
-    (assignment.time_limit_minutes || 60) * 60
-  );
+  // Timer state (seeded from the server when the attempt starts)
+  const [secondsRemaining, setSecondsRemaining] = useState(null);
 
   // Execution & Testing console
   const [consoleTab, setConsoleTab] = useState("testcases"); // "testcases" | "results" | "output"
@@ -40,17 +55,36 @@ export default function ProctoredExamView({ assignment, onExit }) {
 
   const wsRef = useRef(null);
   const peerConnectionRef = useRef(null);
-  const strikesRef = useRef(0);
-  strikesRef.current = strikes;
+  const phaseRef = useRef(phase);
+  const attemptRef = useRef(attempt);
+  const lastStrikeAtRef = useRef(0);
+  const lastLoggedAtRef = useRef(0);
+  const finishingRef = useRef(false);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+    attemptRef.current = attempt;
+  }, [phase, attempt]);
+
+  const strikes = attempt?.strikes ?? 0;
+  const allowedStrikes = attempt?.allowed_strikes ?? assignment.max_strikes ?? 3;
+  const isLocked = attempt?.status === "locked";
 
   // 1. Fetch Assignment detail
   useEffect(() => {
     async function loadExam() {
       try {
-        const data = await api.assignments.getDetail(assignment.id);
+        const [data, existing] = await Promise.all([
+          api.assignments.getDetail(assignment.id),
+          api.attempts.getMine(assignment.id)
+        ]);
+        if (existing?.status === "submitted") {
+          setDoneReason("You have already submitted this test.");
+          setPhase("done");
+        }
         const qs = data.questions || [];
         setQuestions(qs);
-        
+
         // Initialize starter code map
         const initialCodes = {};
         qs.forEach((q) => {
@@ -58,7 +92,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
         });
         setCodeMap(initialCodes);
       } catch (err) {
-        console.error("Error loading exam:", err);
+        setPageError(err.message || "Failed to load the test.");
       } finally {
         setLoading(false);
       }
@@ -66,17 +100,41 @@ export default function ProctoredExamView({ assignment, onExit }) {
     loadExam();
   }, [assignment.id]);
 
+  // Start (or resume) the attempt on the server; this starts the timer
+  const beginExam = async () => {
+    setBeginning(true);
+    try {
+      const res = await api.attempts.start(assignment.id);
+      if (res.status === "submitted") {
+        setDoneReason("You have already submitted this test.");
+        setPhase("done");
+        return;
+      }
+      setAttempt(res);
+      setSecondsRemaining(res.seconds_remaining);
+      setPhase("active");
+    } catch (err) {
+      setPageError(err.message || "Could not start the test.");
+    } finally {
+      setBeginning(false);
+    }
+  };
+
+  // Practice (non-proctored) tests skip the setup checks
+  useEffect(() => {
+    if (!proctored && !loading && !pageError && phase === "setup") beginExam();
+  }, [proctored, loading]);
+
   // 2. Countdown Timer
   useEffect(() => {
+    if (phase !== "active" || secondsRemaining === null) return;
     if (secondsRemaining <= 0) {
-      handleFinalSubmit("Time Expired");
+      handleFinalSubmit("Time expired.");
       return;
     }
-    const timer = setInterval(() => {
-      setSecondsRemaining((prev) => prev - 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [secondsRemaining]);
+    const timer = setTimeout(() => setSecondsRemaining((prev) => prev - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [secondsRemaining, phase]);
 
   // Format time
   const formatTime = (secs) => {
@@ -89,7 +147,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
   const startScreenShare = async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: "always" },
+        video: { cursor: "always", displaySurface: "monitor" },
         audio: false
       });
       setScreenStream(stream);
@@ -98,14 +156,14 @@ export default function ProctoredExamView({ assignment, onExit }) {
       // Handle user stopping screen share from browser banner
       stream.getVideoTracks()[0].onended = () => {
         setIsScreenShared(false);
-        triggerViolation("screen_disconnected", "Screen sharing was stopped by the student.");
+        reportViolation("screen_disconnected", "Screen sharing was stopped by the student.");
       };
 
-      // Initiate WebRTC stream to teacher
+      // Initiate WebRTC stream to the admin
       initWebRTCStream(stream);
     } catch (err) {
       console.warn("Screen share declined or unsupported:", err);
-      triggerViolation("screen_share_denied", "Student did not permit screen sharing.");
+      reportViolation("screen_share_denied", "Student did not permit screen sharing.");
     }
   };
 
@@ -126,7 +184,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
     ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
-        
+
         if (msg.type === "webrtc_answer" && peerConnectionRef.current) {
           await peerConnectionRef.current.setRemoteDescription(
             new RTCSessionDescription(msg.payload)
@@ -136,10 +194,17 @@ export default function ProctoredExamView({ assignment, onExit }) {
             new RTCIceCandidate(msg.payload)
           );
         } else if (msg.type === "teacher_warn") {
-          setWarningMessage(msg.message || "The teacher has issued a warning.");
+          setWarningMessage(msg.message || "The admin has issued a warning.");
           setShowWarningModal(true);
         } else if (msg.type === "teacher_force_submit") {
-          handleFinalSubmit("Submitted remotely by instructor.");
+          handleFinalSubmit("Submitted remotely by the admin.");
+        } else if (msg.type === "attempt_update") {
+          const prev = attemptRef.current;
+          setAttempt(msg.attempt);
+          if (prev?.status === "locked" && msg.attempt.status === "in_progress") {
+            setWarningMessage(`Your admin reset your strikes. You now have ${msg.attempt.allowed_strikes} strike(s) allowed.`);
+            setShowWarningModal(true);
+          }
         }
       } catch (e) {
         console.error("WS error parsing:", e);
@@ -150,11 +215,15 @@ export default function ProctoredExamView({ assignment, onExit }) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.close();
       }
-      if (screenStream) {
-        screenStream.getTracks().forEach((t) => t.stop());
-      }
     };
   }, [assignment.id]);
+
+  // Stop screen capture when leaving the exam
+  useEffect(() => {
+    return () => {
+      screenStream?.getTracks().forEach((t) => t.stop());
+    };
+  }, [screenStream]);
 
   const initWebRTCStream = async (stream) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -187,106 +256,163 @@ export default function ProctoredExamView({ assignment, onExit }) {
     }));
   };
 
-  // 5. Anti-Cheat: Fullscreen Enforcement & Tab Switch Detection
-  const triggerViolation = (eventType, details) => {
-    const nextStrikes = strikesRef.current + 1;
-    setStrikes(nextStrikes);
+  // 5. Anti-Cheat: violations are counted by the server, which locks the attempt at the limit
+  async function reportViolation(eventType, details, { countsAsStrike = true } = {}) {
+    if (phaseRef.current !== "active" || attemptRef.current?.status !== "in_progress") return;
 
-    const strikeMsg = `Strike ${nextStrikes} of ${assignment.max_strikes || 3}: ${details}`;
-    setWarningMessage(strikeMsg);
-    setShowWarningModal(true);
+    const now = Date.now();
+    if (countsAsStrike) {
+      if (now - lastStrikeAtRef.current < STRIKE_DEBOUNCE_MS) return;
+      lastStrikeAtRef.current = now;
+    } else {
+      if (now - lastLoggedAtRef.current < 5000) return;
+      lastLoggedAtRef.current = now;
+    }
 
-    // Broadcast to WebSocket & Log to DB
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: "violation",
+    try {
+      const res = await api.proctoring.recordEvent({
+        assignment_id: assignment.id,
         event_type: eventType,
-        strike_count: nextStrikes,
-        details: details
-      }));
-    }
+        details,
+        counts_as_strike: countsAsStrike
+      });
+      setAttempt(res.attempt);
 
-    api.proctoring.recordEvent({
-      assignment_id: assignment.id,
-      event_type: eventType,
-      strike_count: nextStrikes,
-      details: details,
-      severity: nextStrikes >= (assignment.max_strikes || 3) ? "high" : "medium"
-    }).catch(console.error);
-
-    // Auto-submit if strikes exceeded
-    if (nextStrikes >= (assignment.max_strikes || 3)) {
-      setTimeout(() => {
-        handleFinalSubmit("Exceeded maximum allowed anti-cheat strikes.");
-      }, 3000);
+      if (countsAsStrike) {
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({
+            type: "violation",
+            event_type: eventType,
+            strike_count: res.attempt.strikes,
+            details
+          }));
+        }
+        setWarningMessage(`Strike ${res.attempt.strikes} of ${res.attempt.allowed_strikes}: ${details}`);
+        setShowWarningModal(true);
+      }
+    } catch (err) {
+      console.error("Failed to record proctoring event:", err);
     }
-  };
+  }
 
   // Enter Fullscreen
   const enterFullscreen = () => {
-    if (document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(() => {});
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
     }
-    setIsFullscreen(true);
     setShowWarningModal(false);
   };
 
+  // Fullscreen / focus / side-panel tracking (always on, so the setup checklist stays accurate)
   useEffect(() => {
-    if (!assignment.is_proctored) return;
+    if (!proctored) return;
 
-    // Fullscreen change listener
     const handleFullscreenChange = () => {
       const active = !!document.fullscreenElement;
       setIsFullscreen(active);
+      setSidePanelOpen(isSidePanelOpen());
       if (!active) {
-        triggerViolation("fullscreen_exit", "Exited full-screen exam mode.");
+        reportViolation("fullscreen_exit", "Exited full-screen exam mode.");
       } else if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: "fullscreen_restored" }));
       }
     };
 
-    // Tab switch & window blur
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        triggerViolation("tab_switch", "Student switched away from the exam tab.");
+        reportViolation("tab_switch", "Switched away from the exam tab.");
       }
     };
 
     const handleWindowBlur = () => {
-      triggerViolation("window_blur", "Exam window lost focus.");
+      setHasFocus(false);
+      reportViolation("window_blur", "Exam window lost focus (another app, window or browser panel was used).");
     };
+    const handleWindowFocus = () => setHasFocus(true);
 
-    // Block keyboard shortcuts (F12, Devtools, Alt+Tab, etc.)
-    const handleKeyDown = (e) => {
-      if (
-        e.key === "F12" ||
-        (e.ctrlKey && e.shiftKey && (e.key === "I" || e.key === "i" || e.key === "J" || e.key === "j" || e.key === "C" || e.key === "c")) ||
-        (e.ctrlKey && (e.key === "u" || e.key === "U"))
-      ) {
-        e.preventDefault();
-        triggerViolation("shortcut_blocked", `Blocked inspector shortcut: ${e.key}`);
-      }
+    const checkSidePanel = () => {
+      const open = isSidePanelOpen();
+      setSidePanelOpen((wasOpen) => {
+        if (open && !wasOpen) {
+          reportViolation("side_panel_open", "A browser side panel (e.g. Gemini/Copilot) was opened or the page was zoomed.");
+        }
+        return open;
+      });
     };
-
-    // Prevent context menu
-    const handleContextMenu = (e) => {
-      e.preventDefault();
-    };
+    const sidePanelTimer = setInterval(checkSidePanel, 1000);
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("blur", handleWindowBlur);
-    window.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("resize", checkSidePanel);
 
     return () => {
+      clearInterval(sidePanelTimer);
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("blur", handleWindowBlur);
-      window.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("resize", checkSidePanel);
     };
-  }, [assignment.is_proctored]);
+  }, [proctored]);
+
+  // Clipboard, drag & drop, shortcuts and zoom lockdown. Capture phase, so the code editor never sees them.
+  useEffect(() => {
+    if (!proctored) return;
+
+    const blockClipboard = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      reportViolation("clipboard_blocked", `Blocked ${e.type} attempt.`, { countsAsStrike: false });
+    };
+
+    const handleKeyDown = (e) => {
+      const key = e.key.toLowerCase();
+      const mod = e.ctrlKey || e.metaKey;
+      if (key === "f12" || (mod && e.shiftKey && ["i", "j", "c"].includes(key)) || (mod && key === "u")) {
+        e.preventDefault();
+        e.stopPropagation();
+        reportViolation("shortcut_blocked", `Blocked inspector shortcut: ${e.key}`);
+        return;
+      }
+      if (mod && ["c", "x", "v", "insert"].includes(key) || (e.shiftKey && key === "insert")) {
+        e.preventDefault();
+        e.stopPropagation();
+        reportViolation("clipboard_blocked", "Blocked copy/paste shortcut.", { countsAsStrike: false });
+        return;
+      }
+      // Print, save, find-in-page and zoom
+      if (mod && ["p", "s", "f", "+", "=", "-", "0"].includes(key)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    const blockZoomWheel = (e) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    const handleContextMenu = (e) => e.preventDefault();
+    const blockDrag = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    const opts = { capture: true };
+    ["copy", "cut", "paste"].forEach((t) => document.addEventListener(t, blockClipboard, opts));
+    ["dragstart", "drop"].forEach((t) => document.addEventListener(t, blockDrag, opts));
+    window.addEventListener("keydown", handleKeyDown, opts);
+    window.addEventListener("wheel", blockZoomWheel, { capture: true, passive: false });
+    document.addEventListener("contextmenu", handleContextMenu, opts);
+
+    return () => {
+      ["copy", "cut", "paste"].forEach((t) => document.removeEventListener(t, blockClipboard, opts));
+      ["dragstart", "drop"].forEach((t) => document.removeEventListener(t, blockDrag, opts));
+      window.removeEventListener("keydown", handleKeyDown, opts);
+      window.removeEventListener("wheel", blockZoomWheel, { capture: true });
+      document.removeEventListener("contextmenu", handleContextMenu, opts);
+    };
+  }, [proctored]);
 
   // 6. Code Execution ("Run Code" against sample cases)
   const currentQuestion = questions[activeQuestionIndex];
@@ -302,6 +428,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
     setIsRunning(true);
     setConsoleTab("results");
     setRunResults(null);
+    setSubmitResult(null);
 
     try {
       const res = await api.code.run(
@@ -332,6 +459,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
     setIsSubmitting(true);
     setConsoleTab("results");
     setSubmitResult(null);
+    setRunResults(null);
 
     try {
       const res = await api.code.submit(
@@ -349,25 +477,210 @@ export default function ProctoredExamView({ assignment, onExit }) {
         });
       }
     } catch (err) {
-      alert("Submission error: " + err.message);
+      // Shown in the console instead of alert(): a dialog would steal focus and count as a strike
+      setRunResults({
+        status: "Failed",
+        total_tests: 1,
+        passed_tests: 0,
+        results: [{
+          status: "Submission Error",
+          stderr: err.message,
+          execution_time_ms: 0
+        }]
+      });
     } finally {
       setIsSubmitting(false);
     }
   };
 
   // Final Exam submission
-  const handleFinalSubmit = (reason = "Submitted by student") => {
+  async function handleFinalSubmit(reason = "Submitted by student.") {
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+    setShowFinishConfirm(false);
+    setShowWarningModal(false);
+    try {
+      if (phaseRef.current === "active") await api.attempts.finish(assignment.id);
+    } catch (err) {
+      console.error("Failed to finish attempt:", err);
+    }
+    screenStream?.getTracks().forEach((t) => t.stop());
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {});
     }
-    alert(`Exam completed: ${reason}`);
-    onExit();
-  };
+    setDoneReason(reason);
+    setPhase("done");
+  }
+
+  // ---------- Full-page states (the problem & code are not rendered, so nothing can be read) ----------
+
+  const fullPage = (children) => (
+    <div style={{
+      minHeight: "100vh",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: "24px",
+      background: "#080c14",
+      userSelect: "none"
+    }}>
+      <div className="glass-panel" style={{ maxWidth: "560px", width: "100%", padding: "32px" }}>
+        {children}
+      </div>
+    </div>
+  );
 
   if (loading) {
     return (
       <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "80vh" }}>
         <p style={{ color: "var(--text-muted)" }}>Loading proctored environment...</p>
+      </div>
+    );
+  }
+
+  if (pageError) {
+    return fullPage(
+      <>
+        <h2 style={{ fontSize: "1.3rem", marginBottom: "10px" }}>Can't open this test</h2>
+        <p style={{ color: "#fca5a5", fontSize: "14px", marginBottom: "20px" }}>{pageError}</p>
+        <button onClick={onExit} className="btn btn-secondary"><ArrowLeft size={16} /> Back to Tests</button>
+      </>
+    );
+  }
+
+  if (phase === "done") {
+    return fullPage(
+      <div style={{ textAlign: "center" }}>
+        <CheckCircle2 size={44} color="#10b981" style={{ marginBottom: "12px" }} />
+        <h2 style={{ fontSize: "1.4rem", marginBottom: "8px" }}>Test finished</h2>
+        <p style={{ color: "var(--text-secondary)", fontSize: "14px", marginBottom: "24px" }}>{doneReason}</p>
+        <button onClick={onExit} className="btn btn-primary"><ArrowLeft size={16} /> Back to Tests</button>
+      </div>
+    );
+  }
+
+  if (phase === "setup") {
+    if (!proctored) {
+      return (
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "80vh" }}>
+          <p style={{ color: "var(--text-muted)" }}>Starting test...</p>
+        </div>
+      );
+    }
+    const checks = [
+      {
+        ok: isScreenShared,
+        label: "Share your entire screen",
+        hint: "Pick \"Entire screen\" in the browser dialog.",
+        action: !isScreenShared && (
+          <button onClick={startScreenShare} className="btn btn-secondary btn-sm"><Monitor size={14} /> Share screen</button>
+        )
+      },
+      {
+        ok: isFullscreen,
+        label: "Enter full screen",
+        hint: "The test runs in full screen only.",
+        action: !isFullscreen && (
+          <button onClick={enterFullscreen} className="btn btn-secondary btn-sm"><Maximize2 size={14} /> Full screen</button>
+        )
+      },
+      {
+        ok: isFullscreen && !sidePanelOpen,
+        label: "Close browser side panels, zoom at 100%",
+        hint: "Close Gemini, Copilot or any other side panel. Press Ctrl+0 to reset zoom."
+      }
+    ];
+    const ready = checks.every((c) => c.ok);
+    return fullPage(
+      <>
+        <h2 style={{ fontSize: "1.4rem", marginBottom: "6px" }}>{assignment.title}</h2>
+        <p style={{ color: "var(--text-secondary)", fontSize: "13px", marginBottom: "18px" }}>
+          {assignment.time_limit_minutes || 60} minutes · {questions.length} problems · {allowedStrikes} strikes allowed.
+          The timer starts when you click Begin.
+        </p>
+        <div style={{
+          background: "rgba(239, 68, 68, 0.08)",
+          border: "1px solid rgba(239, 68, 68, 0.25)",
+          borderRadius: "10px",
+          padding: "12px 14px",
+          fontSize: "12.5px",
+          color: "var(--text-secondary)",
+          marginBottom: "18px",
+          lineHeight: 1.6
+        }}>
+          Leaving full screen, switching tabs or apps, opening a browser side panel (Gemini, Copilot, ...)
+          or using developer tools counts as a strike. Copy and paste are disabled. When you reach the strike
+          limit your test is locked until your admin unlocks it. Your screen is visible to the admin.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "22px" }}>
+          {checks.map((c) => (
+            <div key={c.label} className="flex-between" style={{
+              padding: "10px 12px",
+              border: "1px solid var(--border)",
+              borderRadius: "8px",
+              gap: "12px"
+            }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                {c.ok ? <CheckCircle2 size={18} color="#10b981" /> : <XCircle size={18} color="#6b7280" />}
+                <div>
+                  <div style={{ fontSize: "13.5px", fontWeight: "600" }}>{c.label}</div>
+                  <div style={{ fontSize: "11.5px", color: "var(--text-muted)" }}>{c.hint}</div>
+                </div>
+              </div>
+              {c.action}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "10px" }}>
+          <button onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); onExit(); }} className="btn btn-secondary">
+            <ArrowLeft size={16} /> Back
+          </button>
+          <button onClick={beginExam} disabled={!ready || beginning} className="btn btn-success">
+            <Play size={16} /> {beginning ? "Starting..." : "Begin Test"}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  if (isLocked) {
+    return fullPage(
+      <div style={{ textAlign: "center" }}>
+        <Lock size={44} color="#ef4444" style={{ marginBottom: "12px" }} />
+        <h2 style={{ fontSize: "1.4rem", color: "#fca5a5", marginBottom: "8px" }}>Test locked</h2>
+        <p style={{ color: "var(--text-secondary)", fontSize: "14px", marginBottom: "8px" }}>
+          You reached the strike limit ({strikes} of {allowedStrikes}). Your work is saved.
+        </p>
+        <p style={{ color: "var(--text-muted)", fontSize: "13px" }}>
+          Stay on this page. It unlocks automatically when your admin resets your strikes.
+          The timer keeps running ({secondsRemaining !== null ? formatTime(Math.max(0, secondsRemaining)) : "--:--"} left).
+        </p>
+      </div>
+    );
+  }
+
+  const securityIssue = proctored && (
+    !isFullscreen ? "You left full screen."
+      : sidePanelOpen ? "A browser side panel is open (e.g. Gemini/Copilot) or the page is zoomed."
+      : !hasFocus ? "The test window isn't focused."
+      : null
+  );
+
+  if (securityIssue) {
+    return fullPage(
+      <div style={{ textAlign: "center" }}>
+        <AlertTriangle size={44} color="#ef4444" style={{ marginBottom: "12px" }} />
+        <h2 style={{ fontSize: "1.4rem", color: "#fca5a5", marginBottom: "8px" }}>Test hidden</h2>
+        <p style={{ color: "var(--text-main)", fontSize: "14px", marginBottom: "8px" }}>{securityIssue}</p>
+        {warningMessage && (
+          <p style={{ color: "#fca5a5", fontSize: "13px", marginBottom: "8px" }}>{warningMessage}</p>
+        )}
+        <p style={{ color: "var(--text-muted)", fontSize: "12.5px", marginBottom: "22px" }}>
+          Strikes: {strikes} / {allowedStrikes}. Close side panels, set zoom to 100% (Ctrl+0), then return to full screen.
+        </p>
+        <button onClick={() => { setHasFocus(document.hasFocus()); enterFullscreen(); }} className="btn btn-danger btn-lg" style={{ width: "100%" }}>
+          <Maximize2 size={18} /> Return to Full Screen
+        </button>
       </div>
     );
   }
@@ -421,7 +734,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
               color: strikes > 0 ? "#fca5a5" : "var(--text-secondary)"
             }}>
               <ShieldAlert size={14} color={strikes > 0 ? "#ef4444" : "var(--text-muted)"} />
-              <span>Strikes: <strong>{strikes}</strong> / {assignment.max_strikes || 3}</span>
+              <span>Strikes: <strong>{strikes}</strong> / {allowedStrikes}</span>
             </div>
           )}
 
@@ -469,25 +782,21 @@ export default function ProctoredExamView({ assignment, onExit }) {
             display: "flex",
             alignItems: "center",
             gap: "8px",
-            background: secondsRemaining < 300 ? "rgba(239, 68, 68, 0.2)" : "rgba(255, 255, 255, 0.05)",
+            background: secondsRemaining !== null && secondsRemaining < 300 ? "rgba(239, 68, 68, 0.2)" : "rgba(255, 255, 255, 0.05)",
             border: "1px solid var(--border)",
             borderRadius: "8px",
             padding: "6px 12px",
             fontFamily: "var(--font-code)",
             fontWeight: "700",
             fontSize: "13px",
-            color: secondsRemaining < 300 ? "#ef4444" : "#a5b4fc"
+            color: secondsRemaining !== null && secondsRemaining < 300 ? "#ef4444" : "#a5b4fc"
           }}>
             <Clock size={15} />
-            <span>{formatTime(secondsRemaining)}</span>
+            <span>{formatTime(Math.max(0, secondsRemaining ?? 0))}</span>
           </div>
 
           <button
-            onClick={() => {
-              if (window.confirm("Are you sure you want to finish and submit your entire exam?")) {
-                handleFinalSubmit("Submitted by student");
-              }
-            }}
+            onClick={() => setShowFinishConfirm(true)}
             className="btn btn-primary btn-sm"
             style={{ fontWeight: "700" }}
           >
@@ -665,7 +974,8 @@ export default function ProctoredExamView({ assignment, onExit }) {
                   lineNumbers: "on",
                   cursorBlinking: "smooth",
                   smoothScrolling: true,
-                  contextmenu: false // Disable right-click in editor for anti-cheat
+                  contextmenu: false, // Disable right-click in editor for anti-cheat
+                  dragAndDrop: false
                 }}
               />
             </div>
@@ -903,7 +1213,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
         </div>
       </div>
 
-      {/* Anti-Cheat Fullscreen / Violation Alert Modal */}
+      {/* Strike / admin warning modal */}
       {showWarningModal && (
         <div className="modal-overlay" style={{ zIndex: 9999 }}>
           <div className="modal-content" style={{ textAlign: "center", border: "2px solid #ef4444" }}>
@@ -922,11 +1232,11 @@ export default function ProctoredExamView({ assignment, onExit }) {
             </div>
 
             <h2 style={{ fontSize: "1.4rem", color: "#fca5a5", marginBottom: "8px" }}>
-              Exam Security Violation Flagged
+              Exam Security Notice
             </h2>
 
             <p style={{ color: "var(--text-main)", fontSize: "14px", marginBottom: "16px" }}>
-              {warningMessage || "An anti-cheat violation occurred (tab switch or fullscreen exit)."}
+              {warningMessage}
             </p>
 
             <div style={{
@@ -937,8 +1247,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
               color: "var(--text-secondary)",
               marginBottom: "24px"
             }}>
-              This event has been recorded with a timestamp and sent to the instructor's live dashboard.
-              Full screen is required for the duration of the exam.
+              Strikes: {strikes} / {allowedStrikes}. Every event is recorded and visible to your admin.
             </div>
 
             <button
@@ -946,8 +1255,24 @@ export default function ProctoredExamView({ assignment, onExit }) {
               className="btn btn-danger btn-lg"
               style={{ width: "100%" }}
             >
-              <Maximize2 size={18} /> Re-Enter Fullscreen & Resume Exam
+              <Check size={18} /> I Understand, Continue
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Finish confirmation (in-page: native confirm() dialogs steal focus and would count as a strike) */}
+      {showFinishConfirm && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={() => setShowFinishConfirm(false)}>
+          <div className="modal-content" style={{ textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ fontSize: "1.3rem", marginBottom: "8px" }}>Finish the test?</h2>
+            <p style={{ color: "var(--text-secondary)", fontSize: "14px", marginBottom: "22px" }}>
+              Make sure you've clicked Submit Code on each problem. You can't come back after finishing.
+            </p>
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center" }}>
+              <button onClick={() => setShowFinishConfirm(false)} className="btn btn-secondary">Keep Working</button>
+              <button onClick={() => handleFinalSubmit("Submitted by student.")} className="btn btn-primary">Finish Test</button>
+            </div>
           </div>
         </div>
       )}

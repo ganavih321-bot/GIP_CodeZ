@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { X, FileCode, ShieldAlert, Clock, AlertCircle } from "lucide-react";
 import { api } from "../services/api";
 
-export default function CreateAssignmentModal({ isOpen, classroomId, onClose, onCreated }) {
+export default function CreateAssignmentModal({ isOpen, onClose, onCreated }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState("exam");
@@ -21,7 +21,7 @@ export default function CreateAssignmentModal({ isOpen, classroomId, onClose, on
     setLoading(true);
     setError("");
     try {
-      const assignment = await api.assignments.create(classroomId, {
+      const assignment = await api.assignments.create({
         title: title.trim(),
         description: description.trim(),
         type,
@@ -30,9 +30,11 @@ export default function CreateAssignmentModal({ isOpen, classroomId, onClose, on
         max_strikes: parseInt(maxStrikes, 10)
       });
       onCreated(assignment);
+      setTitle("");
+      setDescription("");
       onClose();
     } catch (err) {
-      setError(err.message || "Failed to create assignment.");
+      setError(err.message || "Failed to create test.");
     } finally {
       setLoading(false);
     }
@@ -52,9 +54,9 @@ export default function CreateAssignmentModal({ isOpen, classroomId, onClose, on
               <FileCode size={20} />
             </div>
             <div>
-              <h3>Create Coding Assessment / Exam</h3>
+              <h3>Create Test</h3>
               <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                Configure assessment timing and live anti-cheat parameters
+                Configure timing and anti-cheat settings. Add problems and assign students next.
               </p>
             </div>
           </div>
@@ -83,7 +85,7 @@ export default function CreateAssignmentModal({ isOpen, classroomId, onClose, on
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
-            <label className="form-label">Exam / Assignment Title *</label>
+            <label className="form-label">Test Title *</label>
             <input
               type="text"
               className="form-input"
@@ -182,7 +184,7 @@ export default function CreateAssignmentModal({ isOpen, classroomId, onClose, on
               Cancel
             </button>
             <button type="submit" disabled={loading} className="btn btn-primary">
-              {loading ? "Creating..." : "Create Assessment"}
+              {loading ? "Creating..." : "Create Test"}
             </button>
           </div>
         </form>
