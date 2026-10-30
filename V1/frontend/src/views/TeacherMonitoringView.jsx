@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
   ArrowLeft, ShieldAlert, Monitor, AlertTriangle, Send, 
-  Maximize2, X, RefreshCw, Radio, UserCheck, ShieldOff, Lock, RotateCcw 
+  Maximize2, X, RefreshCw, Radio, UserCheck, ShieldOff, Lock, RotateCcw, Image as ImageIcon 
 } from "lucide-react";
 import { api } from "../services/api";
 import { useAuth } from "../context/AuthContext";
@@ -17,6 +17,7 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
   const [resetTarget, setResetTarget] = useState(null); // student_id being reset
   const [resetStrikes, setResetStrikes] = useState(assignment.max_strikes || 3);
   const [attemptError, setAttemptError] = useState("");
+  const [screenshotView, setScreenshotView] = useState(null); // image data URL
 
   const wsRef = useRef(null);
   const peerConnectionsRef = useRef({}); // student_id -> RTCPeerConnection
@@ -630,18 +631,45 @@ export default function TeacherMonitoringView({ assignment, onBack }) {
                   </p>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "4px" }}>
                     <span style={{ fontSize: "11px", color: "#a5b4fc" }}>
-                      Student ID: {ev.student_id}
+                      {ev.student?.name || students[ev.student_id]?.student_name || `Student ID: ${ev.student_id}`}
                     </span>
                     <span className="badge badge-danger" style={{ fontSize: "10px" }}>
                       Strike #{ev.strike_count}
                     </span>
                   </div>
+                  {ev.has_screenshot && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          const shot = await api.proctoring.getScreenshot(ev.id);
+                          setScreenshotView(shot.image);
+                        } catch (err) {
+                          setAttemptError(err.message || "Failed to load screenshot.");
+                        }
+                      }}
+                      className="btn btn-secondary btn-sm"
+                      style={{ fontSize: "11px", padding: "3px 8px", marginTop: "6px" }}
+                    >
+                      <ImageIcon size={12} /> View screenshot
+                    </button>
+                  )}
                 </div>
               ))
             )}
           </div>
         </div>
       </div>
+
+      {/* Violation screenshot viewer */}
+      {screenshotView && (
+        <div className="modal-overlay" style={{ zIndex: 10001 }} onClick={() => setScreenshotView(null)}>
+          <img
+            src={screenshotView}
+            alt="Violation screenshot"
+            style={{ maxWidth: "92vw", maxHeight: "88vh", borderRadius: "10px" }}
+          />
+        </div>
+      )}
 
       {/* Enlarge Screen Inspection Modal */}
       {selectedStudentForVideo && (

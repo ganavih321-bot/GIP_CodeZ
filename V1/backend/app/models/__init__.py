@@ -3,7 +3,7 @@ from app.models.user import User
 from app.models.assignment import Assignment, AssignmentAssignee
 from app.models.question import Question, TestCase
 from app.models.submission import Submission, TestResult
-from app.models.proctoring import ProctoringEvent
+from app.models.proctoring import ProctoringEvent, ProctoringScreenshot
 from app.models.attempt import ExamAttempt
 
 __all__ = [
@@ -16,5 +16,6 @@ __all__ = [
     "Submission",
     "TestResult",
     "ProctoringEvent",
+    "ProctoringScreenshot",
     "ExamAttempt",
 ]

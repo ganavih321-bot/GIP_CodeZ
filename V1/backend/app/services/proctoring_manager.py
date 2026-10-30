@@ -10,6 +10,8 @@ class ProctoringManager:
         self.rooms: Dict[int, Dict[str, Dict[int, WebSocket]]] = {}
         # assignment_id -> { student_id: { "name": ..., "email": ..., "strikes": 0, "is_fullscreen": True, ... } }
         self.student_states: Dict[int, Dict[int, dict]] = {}
+        # Admins connected to the global alert feed (pop-ups on every page)
+        self.admin_feed: Dict[int, List[WebSocket]] = {}
 
     def _ensure_room(self, assignment_id: int):
         if assignment_id not in self.rooms:
@@ -188,6 +190,25 @@ class ProctoringManager:
                     "type": msg_type,
                     "message": data.get("message", "The teacher has requested action.")
                 })
+
+    async def connect_admin_feed(self, websocket: WebSocket, user_id: int):
+        await websocket.accept()
+        self.admin_feed.setdefault(user_id, []).append(websocket)
+
+    def disconnect_admin_feed(self, websocket: WebSocket, user_id: int):
+        sockets = self.admin_feed.get(user_id, [])
+        if websocket in sockets:
+            sockets.remove(websocket)
+        if not sockets:
+            self.admin_feed.pop(user_id, None)
+
+    async def broadcast_admin_feed(self, message: dict):
+        for user_id, sockets in list(self.admin_feed.items()):
+            for ws in list(sockets):
+                try:
+                    await ws.send_json(message)
+                except Exception:
+                    self.disconnect_admin_feed(ws, user_id)
 
     def update_strikes(self, assignment_id: int, student_id: int, strikes: int):
         state = self.student_states.get(assignment_id, {}).get(student_id)

@@ -20,6 +20,7 @@ class ProctoringEventOut(BaseModel):
     strike_count: int
     timestamp: datetime
     details: Optional[str] = None
+    has_screenshot: bool = False
     student: Optional[UserOut] = None
     model_config = ConfigDict(from_attributes=True)
 
@@ -53,3 +54,10 @@ class ViolationResult(BaseModel):
 
 class StrikeReset(BaseModel):
     allowed_strikes: int = Field(ge=1, le=50)
+
+class ScreenshotUpload(BaseModel):
+    image: str  # JPEG data URL
+
+class ScreenshotOut(BaseModel):
+    event_id: int
+    image: str

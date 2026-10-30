@@ -1,4 +1,5 @@
 import pytest
+from starlette.websockets import WebSocketDisconnect
 from app.services.code_runner import execution_engine
 
 def test_health_check(client):
@@ -243,3 +244,42 @@ def test_strikes_lock_then_admin_reset(client, admin_headers, student_headers):
     assert client.post(f"/api/assignments/{test_id}/attempt/finish", headers=student_headers).json()["status"] == "submitted"
     assert client.post("/api/code/run", json={"question_id": q_id, "code": "print(input())"}, headers=student_headers).status_code == 409
     assert client.post(f"/api/assignments/{test_id}/attempts/{student_id}/reset", json={"allowed_strikes": 3}, headers=admin_headers).status_code == 409
+
+def test_violation_alert_and_screenshot_reach_admin_feed(client, admin_headers, student_headers):
+    students = client.get("/api/admin/students", headers=admin_headers).json()
+    student_id = next(s["id"] for s in students if s["email"] == "student@example.com")
+    test_id = client.post("/api/assignments", json={
+        "title": "Alert Test", "max_strikes": 3, "student_ids": [student_id]
+    }, headers=admin_headers).json()["id"]
+    client.post(f"/api/assignments/{test_id}/attempt/start", headers=student_headers)
+
+    admin_token = admin_headers["Authorization"].split()[1]
+    student_token = student_headers["Authorization"].split()[1]
+
+    # Students can't subscribe to the admin feed
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/api/ws/admin/alerts?token={student_token}") as ws:
+            ws.receive_json()
+
+    with client.websocket_connect(f"/api/ws/admin/alerts?token={admin_token}") as feed:
+        res = client.post("/api/proctoring/events", json={
+            "assignment_id": test_id, "event_type": "side_panel_open", "details": "Gemini"
+        }, headers=student_headers)
+        event_id = res.json()["event"]["id"]
+        alert = feed.receive_json()
+        assert alert["type"] == "violation"
+        assert (alert["event_id"], alert["student_email"], alert["assignment_title"]) == (event_id, "student@example.com", "Alert Test")
+        assert (alert["strikes"], alert["allowed_strikes"]) == (1, 3)
+
+        image = "data:image/jpeg;base64,/9j/AAAA"
+        assert client.post(f"/api/proctoring/events/{event_id}/screenshot", json={"image": "data:text/html,x"}, headers=student_headers).status_code == 400
+        up = client.post(f"/api/proctoring/events/{event_id}/screenshot", json={"image": image}, headers=student_headers)
+        assert up.status_code == 200
+        shot_msg = feed.receive_json()
+        assert shot_msg == {"type": "violation_screenshot", "event_id": event_id, "image": image}
+
+    assert client.post(f"/api/proctoring/events/{event_id}/screenshot", json={"image": image}, headers=student_headers).status_code == 409
+    assert client.get(f"/api/proctoring/events/{event_id}/screenshot", headers=admin_headers).json()["image"] == image
+    assert client.get(f"/api/proctoring/events/{event_id}/screenshot", headers=student_headers).status_code == 403
+    events = client.get(f"/api/assignments/{test_id}/proctoring-events", headers=admin_headers).json()
+    assert events[0]["has_screenshot"] is True

@@ -8,6 +8,7 @@ import StudentsView from "./views/StudentsView";
 import ProctoredExamView from "./views/ProctoredExamView";
 import TeacherMonitoringView from "./views/TeacherMonitoringView";
 import SubmissionsView from "./views/SubmissionsView";
+import AdminAlerts from "./components/AdminAlerts";
 
 // Hash routes: #/tests, #/students, #/tests/:id/exam, #/tests/:id/monitor, #/tests/:id/submissions
 const ASSIGNMENT_VIEWS = ["exam", "monitor", "submissions"];
@@ -131,12 +132,18 @@ function MainApp() {
     );
   }
 
+  // Live strike pop-ups (with screenshots) follow the admin across pages
+  const adminAlerts = isAdmin ? <AdminAlerts /> : null;
+
   if (view === "monitor" && assignmentReady) {
     return (
-      <TeacherMonitoringView
-        assignment={selectedAssignment}
-        onBack={goBackToTests}
-      />
+      <>
+        <TeacherMonitoringView
+          assignment={selectedAssignment}
+          onBack={goBackToTests}
+        />
+        {adminAlerts}
+      </>
     );
   }
 
@@ -182,6 +189,7 @@ function MainApp() {
           </div>
         )}
       </main>
+      {adminAlerts}
     </div>
   );
 }

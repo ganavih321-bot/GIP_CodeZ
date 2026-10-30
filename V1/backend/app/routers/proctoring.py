@@ -6,8 +6,8 @@ from app.config import settings
 from app.database import get_db, SessionLocal
 from app.models.user import User
 from app.models.assignment import Assignment
-from app.models.proctoring import ProctoringEvent
-from app.schemas.proctoring import ProctoringEventCreate, ProctoringEventOut, ViolationResult
+from app.models.proctoring import ProctoringEvent, ProctoringScreenshot
+from app.schemas.proctoring import ProctoringEventCreate, ProctoringEventOut, ViolationResult, ScreenshotUpload, ScreenshotOut
 from app.services.proctoring_manager import proctoring_manager
 from app.core.security import require_admin, require_student, ensure_can_access_assignment
 from app.services.attempts import get_attempt, broadcast_attempt
@@ -26,7 +26,8 @@ async def record_proctoring_event(
     if not attempt:
         raise HTTPException(status_code=409, detail="Start the test before reporting events.")
 
-    if event_in.counts_as_strike and attempt.status == "in_progress":
+    counted = event_in.counts_as_strike and attempt.status == "in_progress"
+    if counted:
         attempt.strikes += 1
         if attempt.strikes >= attempt.allowed_strikes:
             attempt.status = "locked"
@@ -44,7 +45,64 @@ async def record_proctoring_event(
     db.refresh(event)
     db.refresh(attempt)
     await broadcast_attempt(attempt)
+    if counted:
+        await proctoring_manager.broadcast_admin_feed({
+            "type": "violation",
+            "event_id": event.id,
+            "assignment_id": attempt.assignment_id,
+            "assignment_title": attempt.assignment.title,
+            "student_id": current_user.id,
+            "student_name": current_user.name,
+            "student_email": current_user.email,
+            "event_type": event.event_type,
+            "details": event.details,
+            "strikes": attempt.strikes,
+            "allowed_strikes": attempt.allowed_strikes,
+            "status": attempt.status,
+            "timestamp": event.timestamp.isoformat()
+        })
     return {"event": event, "attempt": attempt}
+
+MAX_SCREENSHOT_CHARS = 2_000_000  # ~1.5 MB JPEG as base64
+
+@router.post("/proctoring/events/{event_id}/screenshot", response_model=ScreenshotOut)
+async def upload_violation_screenshot(
+    event_id: int,
+    shot_in: ScreenshotUpload,
+    current_user: User = Depends(require_student),
+    db: Session = Depends(get_db)
+):
+    """Attach a frame of the student's shared screen to one of their own strike events."""
+    event = db.query(ProctoringEvent).filter(
+        ProctoringEvent.id == event_id,
+        ProctoringEvent.student_id == current_user.id
+    ).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if event.screenshot:
+        raise HTTPException(status_code=409, detail="Screenshot already uploaded for this event")
+    if not shot_in.image.startswith("data:image/jpeg;base64,") or len(shot_in.image) > MAX_SCREENSHOT_CHARS:
+        raise HTTPException(status_code=400, detail="Screenshot must be a JPEG data URL under 1.5 MB")
+
+    db.add(ProctoringScreenshot(event_id=event.id, image=shot_in.image))
+    db.commit()
+    await proctoring_manager.broadcast_admin_feed({
+        "type": "violation_screenshot",
+        "event_id": event.id,
+        "image": shot_in.image
+    })
+    return {"event_id": event.id, "image": shot_in.image}
+
+@router.get("/proctoring/events/{event_id}/screenshot", response_model=ScreenshotOut)
+def get_violation_screenshot(
+    event_id: int,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    shot = db.query(ProctoringScreenshot).filter(ProctoringScreenshot.event_id == event_id).first()
+    if not shot:
+        raise HTTPException(status_code=404, detail="No screenshot for this event")
+    return {"event_id": event_id, "image": shot.image}
 
 @router.get("/assignments/{assignment_id}/proctoring-events", response_model=List[ProctoringEventOut])
 def get_assignment_proctoring_events(
@@ -135,3 +193,25 @@ async def proctoring_websocket(
             user_id=user.id,
             role=user.role
         )
+
+# Admin-wide alert feed: strike pop-ups (with screenshots) on every admin page
+@router.websocket("/ws/admin/alerts")
+async def admin_alerts_websocket(websocket: WebSocket, token: str = Query(...)):
+    db = SessionLocal()
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user = db.query(User).filter(User.id == int(payload.get("sub") or 0)).first()
+    except (JWTError, ValueError):
+        user = None
+    finally:
+        db.close()
+    if not user or user.role != "admin":
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    await proctoring_manager.connect_admin_feed(websocket, user.id)
+    try:
+        while True:
+            await websocket.receive_text()  # Keep-alive; admins don't send anything
+    except Exception:
+        proctoring_manager.disconnect_admin_feed(websocket, user.id)

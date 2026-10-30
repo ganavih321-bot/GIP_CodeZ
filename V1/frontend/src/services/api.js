@@ -1,5 +1,5 @@
 const API_BASE = "http://localhost:8000/api";
-const WS_BASE = "ws://localhost:8000/ws";
+const WS_BASE = "ws://localhost:8000/api/ws";
 
 function getHeaders(isJson = true) {
   const token = localStorage.getItem("gip_token");
@@ -145,9 +145,19 @@ export const api = {
       request(`/assignments/${assignmentId}/proctoring-events`),
     getActiveState: (assignmentId) =>
       request(`/assignments/${assignmentId}/active-proctoring`),
+    uploadScreenshot: (eventId, image) =>
+      request(`/proctoring/events/${eventId}/screenshot`, {
+        method: "POST",
+        body: JSON.stringify({ image })
+      }),
+    getScreenshot: (eventId) => request(`/proctoring/events/${eventId}/screenshot`),
     getWsUrl: (assignmentId) => {
       const token = localStorage.getItem("gip_token");
       return `${WS_BASE}/proctoring/${assignmentId}?token=${encodeURIComponent(token)}`;
+    },
+    getAdminAlertsWsUrl: () => {
+      const token = localStorage.getItem("gip_token");
+      return `${WS_BASE}/admin/alerts?token=${encodeURIComponent(token)}`;
     }
   }
 };

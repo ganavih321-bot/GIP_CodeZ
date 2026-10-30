@@ -3,7 +3,7 @@ import Editor from "@monaco-editor/react";
 import confetti from "canvas-confetti";
 import {
   Play, Send, Clock, ShieldAlert, AlertOctagon, CheckCircle2,
-  XCircle, Terminal, Maximize2, Monitor, Lock, ArrowLeft,
+  XCircle, Terminal, Maximize2, Monitor, Lock, ArrowLeft, Volume2,
   Check, X, AlertTriangle
 } from "lucide-react";
 import { api } from "../services/api";
@@ -16,6 +16,69 @@ const STRIKE_DEBOUNCE_MS = 2500;
 function isSidePanelOpen() {
   return !!document.fullscreenElement && window.innerWidth < window.screen.width * 0.97;
 }
+
+const BUZZER_SECONDS = 2;
+
+// 2-second pulsing buzzer generated with Web Audio (no sound file needed)
+function playBuzzer(ctx) {
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+
+  const start = ctx.currentTime;
+  const end = start + BUZZER_SECONDS;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "square";
+  osc.frequency.value = 440;
+
+  // Pulse on/off every 0.2s so it sounds like an alarm buzzer rather than a flat tone
+  gain.gain.setValueAtTime(0, start);
+  for (let t = start; t < end; t += 0.2) {
+    // Full page volume. A web page can't raise or unmute the system volume, hence the sound check before the test.
+    gain.gain.setValueAtTime(0.9, t);
+    gain.gain.setValueAtTime(0, Math.min(t + 0.14, end));
+  }
+
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(start);
+  osc.stop(end);
+}
+
+// Grab one frame of the shared screen as a JPEG data URL (max 1280px wide)
+async function captureScreenFrame(stream) {
+  const track = stream?.getVideoTracks()[0];
+  if (!track || track.readyState !== "live") return null;
+
+  let source;
+  let width;
+  let height;
+  if (window.ImageCapture) {
+    // Works even when the exam tab is in the background (the usual case right after a strike)
+    source = await new ImageCapture(track).grabFrame();
+    width = source.width;
+    height = source.height;
+  } else {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.srcObject = stream;
+    await video.play();
+    source = video;
+    width = video.videoWidth;
+    height = video.videoHeight;
+  }
+
+  const scale = Math.min(1, 1280 / width);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(width * scale);
+  canvas.height = Math.round(height * scale);
+  canvas.getContext("2d").drawImage(source, 0, 0, canvas.width, canvas.height);
+  if (source.close) source.close();
+  if (source.srcObject) source.srcObject = null;
+  return canvas.toDataURL("image/jpeg", 0.6);
+}
+
+// Wait a moment so the frame shows what the student switched to (e.g. the Gemini panel)
+const SCREENSHOT_DELAY_MS = 800;
 
 export default function ProctoredExamView({ assignment, onExit }) {
   const proctored = assignment.is_proctored;
@@ -60,6 +123,26 @@ export default function ProctoredExamView({ assignment, onExit }) {
   const lastStrikeAtRef = useRef(0);
   const lastLoggedAtRef = useRef(0);
   const finishingRef = useRef(false);
+  const audioCtxRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const [soundChecked, setSoundChecked] = useState(false);
+  const [soundPlayed, setSoundPlayed] = useState(false);
+
+  // The setup sound check also unlocks audio (browsers need a click first)
+  const playTestSound = () => {
+    if (!audioCtxRef.current && window.AudioContext) {
+      audioCtxRef.current = new AudioContext();
+    }
+    playBuzzer(audioCtxRef.current);
+    setSoundPlayed(true);
+  };
+
+  // Close the audio context when leaving the exam
+  useEffect(() => {
+    return () => {
+      audioCtxRef.current?.close().catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -102,6 +185,10 @@ export default function ProctoredExamView({ assignment, onExit }) {
 
   // Start (or resume) the attempt on the server; this starts the timer
   const beginExam = async () => {
+    // Browsers only allow audio after a user gesture: unlock it on this click for the strike buzzer
+    if (proctored && !audioCtxRef.current && window.AudioContext) {
+      audioCtxRef.current = new AudioContext();
+    }
     setBeginning(true);
     try {
       const res = await api.attempts.start(assignment.id);
@@ -151,6 +238,7 @@ export default function ProctoredExamView({ assignment, onExit }) {
         audio: false
       });
       setScreenStream(stream);
+      screenStreamRef.current = stream;
       setIsScreenShared(true);
 
       // Handle user stopping screen share from browser banner
@@ -287,6 +375,19 @@ export default function ProctoredExamView({ assignment, onExit }) {
             details
           }));
         }
+        playBuzzer(audioCtxRef.current);
+
+        // Attach a screenshot of the shared screen so the admin sees what happened
+        const eventId = res.event.id;
+        setTimeout(async () => {
+          try {
+            const image = await captureScreenFrame(screenStreamRef.current);
+            if (image) await api.proctoring.uploadScreenshot(eventId, image);
+          } catch (err) {
+            console.error("Failed to capture violation screenshot:", err);
+          }
+        }, SCREENSHOT_DELAY_MS);
+
         setWarningMessage(`Strike ${res.attempt.strikes} of ${res.attempt.allowed_strikes}: ${details}`);
         setShowWarningModal(true);
       }
@@ -588,6 +689,19 @@ export default function ProctoredExamView({ assignment, onExit }) {
         ok: isFullscreen && !sidePanelOpen,
         label: "Close browser side panels, zoom at 100%",
         hint: "Close Gemini, Copilot or any other side panel. Press Ctrl+0 to reset zoom."
+      },
+      {
+        ok: soundChecked,
+        label: "Sound on",
+        hint: "Unmute and turn up your volume. A buzzer sounds on every strike.",
+        action: !soundChecked && (
+          <div style={{ display: "flex", gap: "6px" }}>
+            <button onClick={playTestSound} className="btn btn-secondary btn-sm"><Volume2 size={14} /> Play test sound</button>
+            {soundPlayed && (
+              <button onClick={() => setSoundChecked(true)} className="btn btn-success btn-sm"><Check size={14} /> I heard it</button>
+            )}
+          </div>
+        )
       }
     ];
     const ready = checks.every((c) => c.ok);
